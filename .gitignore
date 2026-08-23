@@ -216,3 +216,29 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# roam-count project
+# ---------------------------------------------------------------------------
+# Model weights + exported artifacts (auto-downloaded / re-generatable, large)
+*.pt
+*.onnx
+*.tflite
+*.engine
+*.mlmodel
+*.mlpackage
+*_saved_model/
+*_ncnn_model/
+# Runtime logs (numbers + timestamps only -- see plan section 7 -- but keep out of git)
+logs/
+# Golden clips / any recorded media -- privacy: NEVER commit (plan section 7)
+golden/
+clips/
+*.mp4
+*.avi
+*.mov
+*.mkv
+# Local config override (e.g. a machine-specific camera source)
+config.local.json
+# Generated at runtime from config.json (single source of truth) -- do not commit
+botsort_custom.yaml

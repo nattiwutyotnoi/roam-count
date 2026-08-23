@@ -1,0 +1,12 @@
+{
+  "_readme": "Ground-truth unique person counts for hand-carried camera clips. Put clip files in clips_dir (gitignored -- never committed, plan section 7). This file holds only numbers, so it IS committed and acts as the regression baseline for Phase 5 (mobile). Count each clip by eye and fill 'unique_count'. Tag each clip split=tune (used while tuning) or split=holdout (NEVER touched during tuning -- guards against overfitting, risk R5). Every clip MUST be filmed hand-carried/walking (plan section 1.5).",
+  "clips_dir": "golden",
+  "_example": {
+    "file": "walk_single_indoor.mp4",
+    "unique_count": 5,
+    "split": "tune",
+    "scenario": "one-by-one, indoor, smooth floor, daylight",
+    "notes": "baseline easy case"
+  },
+  "clips": []
+}

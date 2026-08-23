@@ -1,0 +1,9 @@
+# roam-count dependencies
+#
+# GPU users: install torch/torchvision FIRST from the CUDA index, otherwise pip
+# pulls the CPU-only build and the FPS>=20 gate is unreachable:
+#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# CPU-only users can skip that and just `pip install -r requirements.txt`.
+
+ultralytics>=8.3.0
+opencv-python>=4.9.0

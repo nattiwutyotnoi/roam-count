@@ -1,0 +1,35 @@
+{
+  "camera": {
+    "source": 0,
+    "width": 1280,
+    "height": 720,
+    "fps_request": 30
+  },
+  "detector": {
+    "model": "yolo11n.pt",
+    "imgsz": 640,
+    "conf": 0.35,
+    "iou": 0.5,
+    "classes": [0],
+    "device": "auto",
+    "half": true
+  },
+  "tracker": {
+    "config_file": "botsort_custom.yaml",
+    "with_reid": true,
+    "gmc_method": "sparseOptFlow",
+    "track_buffer": 30,
+    "match_thresh": 0.8,
+    "new_track_thresh": 0.6
+  },
+  "counter": {
+    "min_track_age_frames": 5,
+    "max_history": 10000
+  },
+  "output": {
+    "show_window": true,
+    "window_name": "roam-count",
+    "log_path": "logs/events.jsonl",
+    "save_frames": false
+  }
+}
