@@ -104,6 +104,8 @@ class MainActivity : ComponentActivity() {
         dets.sortedBy { it.x1 }.forEach {
             Log.i(TAG, "selftest box x1=%.1f y1=%.1f x2=%.1f y2=%.1f conf=%.2f".format(it.x1, it.y1, it.x2, it.y2, it.conf))
         }
+        // Non-person objects (red boxes on screen): bus.jpg should show a bus, never a person.
+        Log.i(TAG, "selftest non-person: " + detector.lastNonPersons.joinToString { "${CocoLabels.name(it.cls)} %.2f".format(it.conf) }.ifEmpty { "none" })
     }
 
     private fun startCamera() {

@@ -22,6 +22,7 @@ class CountingAnalyzer(
 
     data class Result(
         val persons: List<TrackedPerson>,
+        val nonPersons: List<Detection>, // display only (red); never tracked, counted or in occupancy
         val uniqueTotal: Int,
         val occupancy: Int,
         val fps: Float,
@@ -47,7 +48,9 @@ class CountingAnalyzer(
             val fps = 1e9f / (now - lastNanos).coerceAtLeast(1)
             lastNanos = now
 
-            onResult(Result(persons, counter.uniqueTotal, persons.size, fps, bmp.width, bmp.height))
+            onResult(
+                Result(persons, detector.lastNonPersons, counter.uniqueTotal, persons.size, fps, bmp.width, bmp.height),
+            )
         } finally {
             image.close() // MUST close every frame or the camera pipeline stalls
         }
