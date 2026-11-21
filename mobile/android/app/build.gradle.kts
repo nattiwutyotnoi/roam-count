@@ -46,6 +46,7 @@ dependencies {
     // Alternative (matches ultralytics' current naming): com.google.ai.edge.litert:litert
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
     implementation("org.tensorflow:tensorflow-lite-gpu:2.16.1")
+    implementation("org.tensorflow:tensorflow-lite-gpu-api:2.16.1") // GpuDelegateFactory classes (R8)
 
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")

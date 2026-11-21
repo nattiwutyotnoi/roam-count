@@ -11,7 +11,7 @@
         android:allowBackup="false"
         android:label="roam-count"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Material3.DayNight.NoActionBar">
+        android:theme="@style/Theme.RoamCount">
 
         <activity
             android:name=".MainActivity"

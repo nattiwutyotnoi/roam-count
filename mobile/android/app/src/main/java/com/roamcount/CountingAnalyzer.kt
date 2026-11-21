@@ -1,6 +1,7 @@
 package com.roamcount
 
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 
@@ -31,7 +32,7 @@ class CountingAnalyzer(
 
     override fun analyze(image: ImageProxy) {
         try {
-            val bmp = image.toRgbBitmap() // TODO: YUV_420_888 -> RGB (see README, use RenderScript/YuvImage/toBitmap())
+            val bmp = image.toRgbBitmap()
             val dets = detector.detect(bmp)
             val persons = tracker.update(dets)
             counter.update(persons.map { it.trackId })
@@ -47,8 +48,15 @@ class CountingAnalyzer(
     }
 }
 
-/** TODO implement YUV_420_888 -> Bitmap. On CameraX you can enable
- *  OUTPUT_IMAGE_FORMAT_RGBA_8888 on ImageAnalysis and use ImageProxy.toBitmap()
- *  (androidx.camera 1.3+), which is the simplest correct path. */
-private fun ImageProxy.toRgbBitmap(): Bitmap =
-    throw NotImplementedError("Convert ImageProxy (YUV/RGBA) to Bitmap -- see README")
+/**
+ * ImageAnalysis is configured with OUTPUT_IMAGE_FORMAT_RGBA_8888, so toBitmap() (camera-core 1.3+)
+ * is a straight copy. The bitmap is in sensor orientation -> rotate upright for the detector.
+ * Held in memory only; never written to disk.
+ */
+private fun ImageProxy.toRgbBitmap(): Bitmap {
+    val bmp = toBitmap()
+    val rot = imageInfo.rotationDegrees
+    if (rot == 0) return bmp
+    val m = Matrix().apply { postRotate(rot.toFloat()) }
+    return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+}

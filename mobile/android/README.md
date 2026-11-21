@@ -27,10 +27,9 @@ mobile/
                 └── MainActivity.kt      ⚠️ CameraX wiring skeleton
 ```
 
-**Move `mobile/UniqueCounter.kt` and `mobile/UniqueCounterTest.kt` into
-`app/src/main/java/com/roamcount/` and `app/src/test/java/com/roamcount/`** — they are
-already in package `com.roamcount`. That's your one piece of logic that is proven equal
-to the PC version.
+`UniqueCounter.kt` / `UniqueCounterTest.kt` now live in `app/src/main/java/com/roamcount/` and
+`app/src/test/java/com/roamcount/` (moved from `mobile/`). That's the one piece of logic proven
+equal to the PC version (11/11 under kotlinc).
 
 ## Run the pure-logic tests (JVM, no Android needed)
 
@@ -80,8 +79,16 @@ in **BoT-SORT + ReID (Option B)**. Decide from the measured numbers, not upfront
 - No frame or video is ever written to disk. No storage permission is requested.
 - If you add Option B, keep ReID embeddings in RAM only; clear them when a track ages out.
 
-## Also needed (standard Android boilerplate, not scaffolded)
+## Build setup (now included, still never built here)
 
-`settings.gradle.kts`, root `build.gradle.kts`, `gradle/wrapper`, a layout XML with a
-`PreviewView` + `OverlayView` + a Reset button, and `res/values/themes.xml`. Android
-Studio's "New Project" generates these — paste these files on top.
+`settings.gradle.kts`, root `build.gradle.kts`, `gradle.properties`, `gradle/wrapper/gradle-wrapper.properties`
+(no `gradle-wrapper.jar`; Android Studio downloads Gradle 8.7 itself), `res/layout/activity_main.xml`
+(PreviewView + OverlayView + Reset button), `res/values/themes.xml`, `proguard-rules.pro`.
+
+**Open `mobile/android` (not `mobile`) as the project root.** Pinned: AGP 8.5.2, Kotlin 1.9.24,
+Gradle 8.7, compileSdk 34, JDK 17 (Android Studio's bundled JBR is fine). If Studio offers an AGP
+upgrade or asks to install SDK Platform 34, accept. Nothing here was compiled against the Android SDK
+(Google's Maven/SDK hosts are unreachable from the dev sandbox), so expect to fix a few compile errors.
+
+The model is not in the repo (`*.tflite` is gitignored): copy `yolo11n.tflite` into `app/src/main/assets/`
+before running; the build itself does not need it.

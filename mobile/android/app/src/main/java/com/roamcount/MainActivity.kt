@@ -10,9 +10,12 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import android.widget.Button
 import androidx.core.content.ContextCompat
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.GpuDelegate
 
@@ -26,6 +29,11 @@ import org.tensorflow.lite.gpu.GpuDelegate
 class MainActivity : ComponentActivity() {
 
     private lateinit var overlay: OverlayView
+    private lateinit var previewView: PreviewView
+
+    // Inference must NOT run on the main thread. A single thread also serializes analyze()
+    // and reset, so counter/tracker never see concurrent access.
+    private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val counter = UniqueCounter(minTrackAgeFrames = 5, maxHistory = 10_000)
     private val tracker = ByteTrackLite(trackBuffer = 30)
 
@@ -35,8 +43,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // TODO inflate a layout with a PreviewView + OverlayView (+ a Reset button).
-        // setContentView(R.layout.activity_main); overlay = findViewById(R.id.overlay); ...
+        setContentView(R.layout.activity_main)
+        previewView = findViewById(R.id.previewView)
+        overlay = findViewById(R.id.overlay)
+        findViewById<Button>(R.id.resetButton).setOnClickListener { onResetClicked() }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
         ) startCamera() else requestCamera.launch(Manifest.permission.CAMERA)
@@ -55,18 +65,17 @@ class MainActivity : ComponentActivity() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             val provider = future.get()
-            val previewView = PreviewView(this) // TODO add to layout
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
             val detector = buildDetector()
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                // .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888) // simplifies toBitmap()
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888) // ImageProxy.toBitmap()
                 .build()
                 .also {
                     it.setAnalyzer(
-                        ContextCompat.getMainExecutor(this),
+                        analysisExecutor,
                         CountingAnalyzer(detector, tracker, counter) { r ->
                             overlay.submit(r)
                         },
@@ -81,8 +90,15 @@ class MainActivity : ComponentActivity() {
 
     // Reset button handler -> start a fresh walk (mirrors PC 'r' hotkey).
     fun onResetClicked() {
-        counter.reset()
-        tracker.reset()
+        analysisExecutor.execute { // same thread as analyze() -> no race
+            counter.reset()
+            tracker.reset()
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        analysisExecutor.shutdown()
     }
 
     private fun loadAsset(name: String): ByteBuffer {
