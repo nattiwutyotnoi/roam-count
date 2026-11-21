@@ -23,6 +23,13 @@ class OverlayView(context: Context, attrs: AttributeSet? = null) : View(context,
     private val boxPaint = Paint().apply {
         color = Color.rgb(0, 220, 0); style = Paint.Style.STROKE; strokeWidth = 4f
     }
+    // Third colour: a PERSON the detector is unsure about (conf < ConfidenceBand.LOW_CONF_THRESHOLD).
+    private val lowBoxPaint = Paint().apply {
+        color = Color.rgb(255, 165, 0); style = Paint.Style.STROKE; strokeWidth = 4f
+    }
+    private val lowTextPaint = Paint().apply {
+        color = Color.rgb(255, 190, 60); textSize = 42f; isAntiAlias = true
+    }
     private val otherBoxPaint = Paint().apply {
         color = Color.rgb(230, 0, 0); style = Paint.Style.STROKE; strokeWidth = 4f
     }
@@ -61,8 +68,10 @@ class OverlayView(context: Context, attrs: AttributeSet? = null) : View(context,
             )
         }
         for (p in persons) {
-            canvas.drawRect(p.x1 * scaleX, p.y1 * scaleY, p.x2 * scaleX, p.y2 * scaleY, boxPaint)
-            canvas.drawText("id ${p.trackId}", p.x1 * scaleX, p.y1 * scaleY - 8f, hudPaint)
+            val low = ConfidenceBand.isLow(p.conf)
+            canvas.drawRect(p.x1 * scaleX, p.y1 * scaleY, p.x2 * scaleX, p.y2 * scaleY, if (low) lowBoxPaint else boxPaint)
+            val label = if (low) "id ${p.trackId} ${"%.2f".format(p.conf)}" else "id ${p.trackId}"
+            canvas.drawText(label, p.x1 * scaleX, p.y1 * scaleY - 8f, if (low) lowTextPaint else hudPaint)
         }
         canvas.drawText("$uniqueTotal", 24f, 110f, bigPaint)
         canvas.drawText("UNIQUE TOTAL", 24f, 150f, hudPaint)
