@@ -2,7 +2,9 @@ package com.roamcount
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -27,6 +29,10 @@ import org.tensorflow.lite.gpu.GpuDelegate
 //   * a Reset button maps to counter.reset() + tracker.reset() (the PC 'r' hotkey)
 
 class MainActivity : ComponentActivity() {
+
+    private companion object {
+        const val TAG = "RoamCount"
+    }
 
     private lateinit var overlay: OverlayView
     private lateinit var previewView: PreviewView
@@ -54,11 +60,44 @@ class MainActivity : ComponentActivity() {
 
     private fun buildDetector(): PersonDetector {
         val model = loadAsset("yolo11n.tflite") // put the exported model in app/src/main/assets/
-        val options = Interpreter.Options().apply {
-            // Try GPU delegate; fall back to NNAPI or CPU threads if unsupported.
-            try { addDelegate(GpuDelegate()) } catch (_: Throwable) { setNumThreads(4) }
+        // The GPU delegate is only *applied* when the Interpreter is constructed, so the fallback must
+        // wrap the whole PersonDetector(...) call, not addDelegate(). (Seen on the emulator: the GPU
+        // delegate rejected this graph -- "Batch size mismatch" -- and Interpreter() threw.)
+        val detector = try {
+            val gpu = Interpreter.Options().apply { addDelegate(GpuDelegate()) }
+            PersonDetector(model, gpu, inputSize = 640, confThresh = 0.35f, iouThresh = 0.5f).also {
+                Log.i(TAG, "delegate: GPU")
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "GPU delegate unusable (${e.message?.lineSequence()?.firstOrNull()}); falling back to CPU")
+            val cpu = Interpreter.Options().apply { setNumThreads(4) }
+            PersonDetector(model, cpu, inputSize = 640, confThresh = 0.35f, iouThresh = 0.5f).also {
+                Log.i(TAG, "delegate: CPU (4 threads)")
+            }
         }
-        return PersonDetector(model, options, inputSize = 640, confThresh = 0.35f, iouThresh = 0.5f)
+        Log.i(TAG, "model: ${detector.describe()}") // verify NCHW / [1,84,8400] / fp32|int8 on the real device
+        selfTest(detector)
+        return detector
+    }
+
+    /**
+     * Optional on-device check: if assets/selftest.jpg exists (e.g. ultralytics' bus.jpg), run the
+     * detector once and log the result. Expect 4 persons for bus.jpg (PC .pt model: 4, boxes within
+     * ~6 px). Never writes anything to disk; skipped silently when the asset is absent.
+     */
+    private fun selfTest(detector: PersonDetector) {
+        val bmp = try {
+            assets.open("selftest.jpg").use { BitmapFactory.decodeStream(it) }
+        } catch (_: java.io.IOException) {
+            return
+        } ?: return
+        val t0 = System.nanoTime()
+        val dets = detector.detect(bmp)
+        val ms = (System.nanoTime() - t0) / 1e6
+        Log.i(TAG, "selftest: ${dets.size} persons in %.0f ms (first call, includes warm-up)".format(ms))
+        dets.sortedBy { it.x1 }.forEach {
+            Log.i(TAG, "selftest box x1=%.1f y1=%.1f x2=%.1f y2=%.1f conf=%.2f".format(it.x1, it.y1, it.x2, it.y2, it.conf))
+        }
     }
 
     private fun startCamera() {

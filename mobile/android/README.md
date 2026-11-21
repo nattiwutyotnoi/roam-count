@@ -92,3 +92,16 @@ upgrade or asks to install SDK Platform 34, accept. Nothing here was compiled ag
 
 The model is not in the repo (`*.tflite` is gitignored): copy `yolo11n.tflite` into `app/src/main/assets/`
 before running; the build itself does not need it.
+
+## Verified on the Android emulator (2026-11-21, Medium Phone API 37)
+
+- Model: `yolo11n.tflite` fp32 (10.3 MB), exported on Linux with `yolo export model=yolo11n.pt format=litert imgsz=640`
+  (ultralytics 8.4.216 + `litert-torch` 0.10; `format=tflite` is now an alias for `litert`). Not committed (`*.tflite` is gitignored).
+- Real model I/O, read back by `PersonDetector.describe()`: input `[1,3,640,640]` NCHW float32, output `[1,84,8400]`
+  attribute-major, boxes normalized `[0,1]`. All three match what `YoloDecoder` assumes.
+- Self-test (`assets/selftest.jpg` = ultralytics' bus.jpg, gitignored): 4 persons, boxes within 0.2 px of the Python reference
+  (`ai_edge_litert` + the same decode) and within ~6 px of the `.pt` model (mean conf 0.746 vs 0.811, same as ONNX).
+- **GPU delegate fails on this graph** (`TfLiteGpuDelegate Init: Batch size mismatch`, node 355) and the failure only surfaces when
+  `Interpreter` is constructed, so `MainActivity` wraps the whole detector construction and falls back to CPU (XNNPACK, 4 threads).
+  Emulator FPS (~5) says nothing about a phone; measure FPS on real hardware.
+- Still open: real-phone run (camera, FPS >= 15 gate, thermal), int8 model (re-calibrate on in-domain frames), golden-set accuracy.

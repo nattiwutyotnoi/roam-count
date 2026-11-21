@@ -242,3 +242,6 @@ clips/
 config.local.json
 # Generated at runtime from config.json (single source of truth) -- do not commit
 botsort_custom.yaml
+
+# On-device self-test image (shows people) -- never commit
+mobile/android/app/src/main/assets/selftest.jpg
