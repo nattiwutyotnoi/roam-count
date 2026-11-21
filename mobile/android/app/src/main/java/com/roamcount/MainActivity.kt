@@ -2,7 +2,9 @@ package com.roamcount
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -10,9 +12,12 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import android.widget.Button
 import androidx.core.content.ContextCompat
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.GpuDelegate
 
@@ -25,7 +30,16 @@ import org.tensorflow.lite.gpu.GpuDelegate
 
 class MainActivity : ComponentActivity() {
 
+    private companion object {
+        const val TAG = "RoamCount"
+    }
+
     private lateinit var overlay: OverlayView
+    private lateinit var previewView: PreviewView
+
+    // Inference must NOT run on the main thread. A single thread also serializes analyze()
+    // and reset, so counter/tracker never see concurrent access.
+    private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val counter = UniqueCounter(minTrackAgeFrames = 5, maxHistory = 10_000)
     private val tracker = ByteTrackLite(trackBuffer = 30)
 
@@ -35,8 +49,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // TODO inflate a layout with a PreviewView + OverlayView (+ a Reset button).
-        // setContentView(R.layout.activity_main); overlay = findViewById(R.id.overlay); ...
+        setContentView(R.layout.activity_main)
+        previewView = findViewById(R.id.previewView)
+        overlay = findViewById(R.id.overlay)
+        findViewById<Button>(R.id.resetButton).setOnClickListener { onResetClicked() }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
         ) startCamera() else requestCamera.launch(Manifest.permission.CAMERA)
@@ -44,29 +60,61 @@ class MainActivity : ComponentActivity() {
 
     private fun buildDetector(): PersonDetector {
         val model = loadAsset("yolo11n.tflite") // put the exported model in app/src/main/assets/
-        val options = Interpreter.Options().apply {
-            // Try GPU delegate; fall back to NNAPI or CPU threads if unsupported.
-            try { addDelegate(GpuDelegate()) } catch (_: Throwable) { setNumThreads(4) }
+        // The GPU delegate is only *applied* when the Interpreter is constructed, so the fallback must
+        // wrap the whole PersonDetector(...) call, not addDelegate(). (Seen on the emulator: the GPU
+        // delegate rejected this graph -- "Batch size mismatch" -- and Interpreter() threw.)
+        val detector = try {
+            val gpu = Interpreter.Options().apply { addDelegate(GpuDelegate()) }
+            PersonDetector(model, gpu, inputSize = 640, confThresh = 0.35f, iouThresh = 0.5f).also {
+                Log.i(TAG, "delegate: GPU")
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "GPU delegate unusable (${e.message?.lineSequence()?.firstOrNull()}); falling back to CPU")
+            val cpu = Interpreter.Options().apply { setNumThreads(4) }
+            PersonDetector(model, cpu, inputSize = 640, confThresh = 0.35f, iouThresh = 0.5f).also {
+                Log.i(TAG, "delegate: CPU (4 threads)")
+            }
         }
-        return PersonDetector(model, options, inputSize = 640, confThresh = 0.35f, iouThresh = 0.5f)
+        Log.i(TAG, "model: ${detector.describe()}") // verify NCHW / [1,84,8400] / fp32|int8 on the real device
+        selfTest(detector)
+        return detector
+    }
+
+    /**
+     * Optional on-device check: if assets/selftest.jpg exists (e.g. ultralytics' bus.jpg), run the
+     * detector once and log the result. Expect 4 persons for bus.jpg (PC .pt model: 4, boxes within
+     * ~6 px). Never writes anything to disk; skipped silently when the asset is absent.
+     */
+    private fun selfTest(detector: PersonDetector) {
+        val bmp = try {
+            assets.open("selftest.jpg").use { BitmapFactory.decodeStream(it) }
+        } catch (_: java.io.IOException) {
+            return
+        } ?: return
+        val t0 = System.nanoTime()
+        val dets = detector.detect(bmp)
+        val ms = (System.nanoTime() - t0) / 1e6
+        Log.i(TAG, "selftest: ${dets.size} persons in %.0f ms (first call, includes warm-up)".format(ms))
+        dets.sortedBy { it.x1 }.forEach {
+            Log.i(TAG, "selftest box x1=%.1f y1=%.1f x2=%.1f y2=%.1f conf=%.2f".format(it.x1, it.y1, it.x2, it.y2, it.conf))
+        }
     }
 
     private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             val provider = future.get()
-            val previewView = PreviewView(this) // TODO add to layout
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
             val detector = buildDetector()
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                // .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888) // simplifies toBitmap()
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888) // ImageProxy.toBitmap()
                 .build()
                 .also {
                     it.setAnalyzer(
-                        ContextCompat.getMainExecutor(this),
+                        analysisExecutor,
                         CountingAnalyzer(detector, tracker, counter) { r ->
                             overlay.submit(r)
                         },
@@ -81,8 +129,15 @@ class MainActivity : ComponentActivity() {
 
     // Reset button handler -> start a fresh walk (mirrors PC 'r' hotkey).
     fun onResetClicked() {
-        counter.reset()
-        tracker.reset()
+        analysisExecutor.execute { // same thread as analyze() -> no race
+            counter.reset()
+            tracker.reset()
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        analysisExecutor.shutdown()
     }
 
     private fun loadAsset(name: String): ByteBuffer {

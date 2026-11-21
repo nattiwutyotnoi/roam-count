@@ -4,8 +4,9 @@ package com.roamcount
  * Port of test_counter.py -- same cases, same expected numbers, so the Kotlin
  * counter is provably equivalent to the Python one (portability guardrail).
  *
- * Standalone (no JUnit needed):   kotlinc UniqueCounter.kt UniqueCounterTest.kt -include-runtime -d t.jar && java -jar t.jar
- * Or drop both files into app/src/test and wrap each fun in @Test.
+ * Standalone (no JUnit needed), from app/src:
+ *   kotlinc main/java/com/roamcount/UniqueCounter.kt test/java/com/roamcount/UniqueCounterTest.kt -include-runtime -d t.jar && java -jar t.jar
+ * (kept as a plain main() rather than @Test; Gradle compiles it but does not run it).
  *
  * Executed with kotlinc 2.0.21 on 2026-11-21: 11/11 pass. The identical
  * cases also pass 11/11 in Python (`python test_counter.py`).

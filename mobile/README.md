@@ -8,7 +8,7 @@ decisions and exact steps for the rest.
 
 | Item | Status |
 |---|---|
-| `UniqueCounter.kt` — 1:1 port of `counter.py` (pure logic) | ✅ written |
+| `android/app/.../UniqueCounter.kt` — 1:1 port of `counter.py` (pure logic) | ✅ written |
 | `UniqueCounterTest.kt` — same 11 cases as `test_counter.py` | ✅ written and **executed with kotlinc: 11/11 pass** (same cases also pass in Python) |
 | ONNX export of `yolo11n` | ✅ `yolo11n.onnx` (10.2 MB) |
 | Export sanity (`.pt` vs `.onnx`, same image) | ✅ **person count identical 4=4**; mean conf 0.811 → 0.746; FPS 51 (CUDA) vs 30 (onnxruntime-CPU) |
