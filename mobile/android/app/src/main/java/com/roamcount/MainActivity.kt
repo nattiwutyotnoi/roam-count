@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.util.Log
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -38,6 +39,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var overlay: OverlayView
     private lateinit var previewView: PreviewView
 
+    // Built once (loading the model is slow) and reused every time the camera is rebound.
+    private var detector: PersonDetector? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var useFrontCamera = false
+
     // Inference must NOT run on the main thread. A single thread also serializes analyze()
     // and reset, so counter/tracker never see concurrent access.
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -59,6 +65,7 @@ class MainActivity : ComponentActivity() {
         previewView = findViewById(R.id.previewView)
         overlay = findViewById(R.id.overlay)
         findViewById<Button>(R.id.resetButton).setOnClickListener { onResetClicked() }
+        findViewById<Button>(R.id.switchCameraButton).setOnClickListener { onSwitchCameraClicked() }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
         ) startCamera() else requestCamera.launch(Manifest.permission.CAMERA)
@@ -112,27 +119,50 @@ class MainActivity : ComponentActivity() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             val provider = future.get()
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(previewView.surfaceProvider)
-            }
-            val detector = buildDetector()
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888) // ImageProxy.toBitmap()
-                .build()
-                .also {
-                    it.setAnalyzer(
-                        analysisExecutor,
-                        CountingAnalyzer(detector, tracker, counter, emptyReset) { r ->
-                            overlay.submit(r)
-                        },
-                    )
-                }
-            provider.unbindAll()
-            provider.bindToLifecycle(
-                this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis,
-            )
+            cameraProvider = provider
+            if (detector == null) detector = buildDetector()
+            // Offer the switch only when the phone has both cameras.
+            findViewById<Button>(R.id.switchCameraButton).visibility =
+                if (provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) &&
+                    provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
+                ) View.VISIBLE else View.GONE
+            bindCamera()
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    /** (Re)bind preview + analysis to the selected camera. Safe to call repeatedly. */
+    private fun bindCamera() {
+        val provider = cameraProvider ?: return
+        val det = detector ?: return
+        val selector = if (useFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+        overlay.setMirrored(useFrontCamera)
+        Log.i(TAG, "camera: ${if (useFrontCamera) "FRONT (mirrored overlay)" else "BACK"}")
+        val preview = Preview.Builder().build().also {
+            it.setSurfaceProvider(previewView.surfaceProvider)
+        }
+        val analysis = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888) // ImageProxy.toBitmap()
+            .build()
+            .also {
+                it.setAnalyzer(
+                    analysisExecutor,
+                    CountingAnalyzer(det, tracker, counter, emptyReset) { r ->
+                        overlay.submit(r)
+                    },
+                )
+            }
+        provider.unbindAll()
+        provider.bindToLifecycle(this, selector, preview, analysis)
+    }
+
+    // Flip button: back <-> front. The unique total keeps counting (it is not reset); only the live
+    // tracks are dropped -- boxes from the old camera must not match people on the new one, and
+    // ids stay unique so UniqueCounter never sees an old id reissued.
+    private fun onSwitchCameraClicked() {
+        useFrontCamera = !useFrontCamera
+        analysisExecutor.execute { tracker.dropTracks() } // same thread as analyze() -> no race
+        bindCamera()
     }
 
     // Reset button handler -> start a fresh walk (mirrors PC 'r' hotkey).

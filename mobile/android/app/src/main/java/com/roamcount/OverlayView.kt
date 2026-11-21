@@ -19,6 +19,8 @@ class OverlayView(context: Context, attrs: AttributeSet? = null) : View(context,
     @Volatile private var fps = 0f
     @Volatile private var scaleX = 1f
     @Volatile private var scaleY = 1f
+    /** The front camera's preview is mirrored by PreviewView, but analysis frames are not: flip x. */
+    @Volatile private var mirrorX = false
 
     private val boxPaint = Paint().apply {
         color = Color.rgb(0, 220, 0); style = Paint.Style.STROKE; strokeWidth = 4f
@@ -43,6 +45,15 @@ class OverlayView(context: Context, attrs: AttributeSet? = null) : View(context,
         color = Color.WHITE; textSize = 42f; isAntiAlias = true
     }
 
+    fun setMirrored(mirrored: Boolean) {
+        mirrorX = mirrored
+        postInvalidate()
+    }
+
+    // Frame x -> view x, flipped across the view when mirrored (left edge of a box = its mirrored right edge).
+    private fun left(x1: Float, x2: Float) = if (mirrorX) width - x2 * scaleX else x1 * scaleX
+    private fun right(x1: Float, x2: Float) = if (mirrorX) width - x1 * scaleX else x2 * scaleX
+
     /** Called from the analyzer's onResult (post to main thread via postInvalidate). */
     fun submit(r: CountingAnalyzer.Result) {
         persons = r.persons
@@ -61,17 +72,17 @@ class OverlayView(context: Context, attrs: AttributeSet? = null) : View(context,
         super.onDraw(canvas)
         // Not a person -> red (display only). Person tracks -> green, below.
         for (d in nonPersons) {
-            canvas.drawRect(d.x1 * scaleX, d.y1 * scaleY, d.x2 * scaleX, d.y2 * scaleY, otherBoxPaint)
+            canvas.drawRect(left(d.x1, d.x2), d.y1 * scaleY, right(d.x1, d.x2), d.y2 * scaleY, otherBoxPaint)
             canvas.drawText(
                 "${CocoLabels.name(d.cls)} ${"%.2f".format(d.conf)}",
-                d.x1 * scaleX, d.y1 * scaleY - 8f, otherTextPaint,
+                left(d.x1, d.x2), d.y1 * scaleY - 8f, otherTextPaint,
             )
         }
         for (p in persons) {
             val low = ConfidenceBand.isLow(p.conf)
-            canvas.drawRect(p.x1 * scaleX, p.y1 * scaleY, p.x2 * scaleX, p.y2 * scaleY, if (low) lowBoxPaint else boxPaint)
+            canvas.drawRect(left(p.x1, p.x2), p.y1 * scaleY, right(p.x1, p.x2), p.y2 * scaleY, if (low) lowBoxPaint else boxPaint)
             val label = if (low) "id ${p.trackId} ${"%.2f".format(p.conf)}" else "id ${p.trackId}"
-            canvas.drawText(label, p.x1 * scaleX, p.y1 * scaleY - 8f, if (low) lowTextPaint else hudPaint)
+            canvas.drawText(label, left(p.x1, p.x2), p.y1 * scaleY - 8f, if (low) lowTextPaint else hudPaint)
         }
         canvas.drawText("$uniqueTotal", 24f, 110f, bigPaint)
         canvas.drawText("UNIQUE TOTAL", 24f, 150f, hudPaint)
