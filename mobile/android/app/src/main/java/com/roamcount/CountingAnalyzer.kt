@@ -16,6 +16,7 @@ class CountingAnalyzer(
     private val detector: PersonDetector,
     private val tracker: ByteTrackLite,
     private val counter: UniqueCounter,
+    private val emptyReset: EmptyFrameReset = EmptyFrameReset(0), // 0 = never auto-reset
     private val onResult: (Result) -> Unit,
 ) : ImageAnalysis.Analyzer {
 
@@ -38,6 +39,11 @@ class CountingAnalyzer(
             counter.update(persons.map { it.trackId })
 
             val now = System.nanoTime()
+            // Nobody in frame for the grace period -> the walk is over: start again from 0.
+            if (emptyReset.update(persons.size, now)) {
+                counter.reset()
+                tracker.reset()
+            }
             val fps = 1e9f / (now - lastNanos).coerceAtLeast(1)
             lastNanos = now
 

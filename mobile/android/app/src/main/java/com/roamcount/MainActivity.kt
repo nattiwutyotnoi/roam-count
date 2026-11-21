@@ -32,6 +32,7 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val TAG = "RoamCount"
+        const val EMPTY_RESET_SECONDS = 2L // frame empty this long -> unique total back to 0 (0 = off)
     }
 
     private lateinit var overlay: OverlayView
@@ -42,6 +43,11 @@ class MainActivity : ComponentActivity() {
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val counter = UniqueCounter(minTrackAgeFrames = 5, maxHistory = 10_000)
     private val tracker = ByteTrackLite(trackBuffer = 30)
+
+    // Unique total returns to 0 once the frame has been empty this long. A grace period is
+    // needed so a few missed detections / someone stepping out briefly don't wipe the count.
+    // Set to 0 to turn the auto-reset off (then only the Reset button clears the total).
+    private val emptyReset = EmptyFrameReset(graceNanos = EMPTY_RESET_SECONDS * 1_000_000_000L)
 
     private val requestCamera = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -115,7 +121,7 @@ class MainActivity : ComponentActivity() {
                 .also {
                     it.setAnalyzer(
                         analysisExecutor,
-                        CountingAnalyzer(detector, tracker, counter) { r ->
+                        CountingAnalyzer(detector, tracker, counter, emptyReset) { r ->
                             overlay.submit(r)
                         },
                     )
@@ -132,6 +138,7 @@ class MainActivity : ComponentActivity() {
         analysisExecutor.execute { // same thread as analyze() -> no race
             counter.reset()
             tracker.reset()
+            emptyReset.reset()
         }
     }
 
