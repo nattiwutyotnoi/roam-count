@@ -142,6 +142,54 @@ object YoloDecoder {
         return dets
     }
 
+    /**
+     * Candidates whose best class is NOT [personClass] -- for DISPLAY only (red boxes); they are
+     * never tracked or counted. Mirror image of [decode]: an anchor belongs to exactly one of
+     * the two (ties go to the person), so a person is never reported here.
+     *
+     * Unlike [decode] there is no cheap early-out (the best of ~79 classes is needed), so scan
+     * class by class: with ATTR_MAJOR that keeps every read contiguous.
+     */
+    fun decodeNonPerson(
+        raw: FloatArray,
+        anchors: Int,
+        attrs: Int,
+        layout: OutputLayout,
+        confThresh: Float,
+        personClass: Int,
+        boxScale: Float,
+    ): List<Detection> {
+        require(raw.size == anchors * attrs) { "raw size ${raw.size} != anchors*attrs ${anchors * attrs}" }
+        val numCls = attrs - 4
+        require(personClass in 0 until numCls) { "personClass $personClass outside 0..${numCls - 1}" }
+
+        fun at(attr: Int, a: Int): Float =
+            if (layout == OutputLayout.ATTR_MAJOR) raw[attr * anchors + a] else raw[a * attrs + attr]
+
+        val bestScore = FloatArray(anchors)
+        val bestCls = IntArray(anchors) { -1 }
+        for (c in 0 until numCls) {
+            if (c == personClass) continue
+            for (a in 0 until anchors) {
+                val s = at(4 + c, a)
+                if (s > bestScore[a]) { bestScore[a] = s; bestCls[a] = c }
+            }
+        }
+
+        val dets = ArrayList<Detection>()
+        for (a in 0 until anchors) {
+            val s = bestScore[a]
+            if (bestCls[a] < 0 || s < confThresh) continue
+            if (at(4 + personClass, a) >= s) continue // person is best (ties -> person)
+            val cx = at(0, a) * boxScale
+            val cy = at(1, a) * boxScale
+            val w = at(2, a) * boxScale
+            val h = at(3, a) * boxScale
+            dets.add(Detection(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f, s, bestCls[a]))
+        }
+        return dets
+    }
+
     /** Undo the letterbox (model-input pixels -> original-frame pixels) and clip to the frame. */
     fun toFrame(d: Detection, scale: Float, padX: Float, padY: Float, frameW: Int, frameH: Int): Detection =
         Detection(

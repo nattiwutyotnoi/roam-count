@@ -17,6 +17,10 @@ object Nms {
         return if (union <= 0f) 0f else inter / union
     }
 
+    /** [dets] minus every box that overlaps any box in [against] by more than [iouThresh]. */
+    fun dropOverlapping(dets: List<Detection>, against: List<Detection>, iouThresh: Float): List<Detection> =
+        dets.filter { d -> against.none { iou(d, it) > iouThresh } }
+
     /** Keep the highest-score box, drop any remaining box overlapping it by > iouThresh. */
     fun apply(dets: List<Detection>, iouThresh: Float): List<Detection> {
         val pool = dets.sortedByDescending { it.conf }.toMutableList()

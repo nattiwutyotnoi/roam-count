@@ -36,6 +36,9 @@ class PersonDetector(
     private val iouThresh: Float = 0.5f,
     private val personClass: Int = 0,
     private val boxesNormalized: Boolean = true,
+    /** Also report non-person objects (drawn red, never tracked/counted). false = skip the extra scan. */
+    private val detectNonPerson: Boolean = true,
+    private val nonPersonConfThresh: Float = 0.5f,
 ) {
     private val interpreter = Interpreter(modelBuffer, options)
     private val nativeOrder = ByteOrder.nativeOrder()
@@ -88,6 +91,13 @@ class PersonDetector(
         "in=${inTensor.shape().toList()} ${if (inputIsNchw) "NCHW" else "NHWC"} $inType | " +
             "out=${outTensor.shape().toList()} $outLayout $outType | boxesNormalized=$boxesNormalized"
 
+    /**
+     * Non-person objects found by the last [detect] call (frame pixels), for the red boxes.
+     * Written and read on the analysis thread only. Not tracked, not counted.
+     */
+    var lastNonPersons: List<Detection> = emptyList()
+        private set
+
     fun detect(frame: Bitmap): List<Detection> {
         val lb = letterbox(frame)
         lbBitmap.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
@@ -100,7 +110,19 @@ class PersonDetector(
         val boxScale = if (boxesNormalized) inputSize.toFloat() else 1f
         val candidates = YoloDecoder.decode(raw, outAnchors, outAttrs, outLayout, confThresh, personClass, boxScale)
         // NMS in model-input space (like ultralytics), then map the survivors to frame pixels.
-        return Nms.apply(candidates, iouThresh).map {
+        val persons = Nms.apply(candidates, iouThresh)
+
+        lastNonPersons = if (!detectNonPerson) emptyList() else {
+            val others = YoloDecoder.decodeNonPerson(
+                raw, outAnchors, outAttrs, outLayout, nonPersonConfThresh, personClass, boxScale,
+            )
+            // Same object labelled twice (e.g. a person also scoring as "chair"): the person wins.
+            Nms.dropOverlapping(Nms.apply(others, iouThresh), persons, SAME_OBJECT_IOU).map {
+                YoloDecoder.toFrame(it, lb.scale, lb.padX, lb.padY, frame.width, frame.height)
+            }
+        }
+
+        return persons.map {
             YoloDecoder.toFrame(it, lb.scale, lb.padX, lb.padY, frame.width, frame.height)
         }
     }
@@ -123,6 +145,8 @@ class PersonDetector(
     }
 
     private companion object {
+        const val SAME_OBJECT_IOU = 0.7f
+
         fun typeOf(t: DataType): YoloDecoder.TensorType = when (t) {
             DataType.FLOAT32 -> YoloDecoder.TensorType.FLOAT32
             DataType.INT8 -> YoloDecoder.TensorType.INT8

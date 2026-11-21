@@ -13,6 +13,7 @@ import android.view.View
 class OverlayView(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
 
     @Volatile private var persons: List<TrackedPerson> = emptyList()
+    @Volatile private var nonPersons: List<Detection> = emptyList()
     @Volatile private var uniqueTotal = 0
     @Volatile private var occupancy = 0
     @Volatile private var fps = 0f
@@ -21,6 +22,12 @@ class OverlayView(context: Context, attrs: AttributeSet? = null) : View(context,
 
     private val boxPaint = Paint().apply {
         color = Color.rgb(0, 220, 0); style = Paint.Style.STROKE; strokeWidth = 4f
+    }
+    private val otherBoxPaint = Paint().apply {
+        color = Color.rgb(230, 0, 0); style = Paint.Style.STROKE; strokeWidth = 4f
+    }
+    private val otherTextPaint = Paint().apply {
+        color = Color.rgb(255, 80, 80); textSize = 36f; isAntiAlias = true
     }
     private val bigPaint = Paint().apply {
         color = Color.rgb(0, 220, 0); textSize = 96f; isAntiAlias = true
@@ -32,6 +39,7 @@ class OverlayView(context: Context, attrs: AttributeSet? = null) : View(context,
     /** Called from the analyzer's onResult (post to main thread via postInvalidate). */
     fun submit(r: CountingAnalyzer.Result) {
         persons = r.persons
+        nonPersons = r.nonPersons
         uniqueTotal = r.uniqueTotal
         occupancy = r.occupancy
         fps = r.fps
@@ -44,6 +52,14 @@ class OverlayView(context: Context, attrs: AttributeSet? = null) : View(context,
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        // Not a person -> red (display only). Person tracks -> green, below.
+        for (d in nonPersons) {
+            canvas.drawRect(d.x1 * scaleX, d.y1 * scaleY, d.x2 * scaleX, d.y2 * scaleY, otherBoxPaint)
+            canvas.drawText(
+                "${CocoLabels.name(d.cls)} ${"%.2f".format(d.conf)}",
+                d.x1 * scaleX, d.y1 * scaleY - 8f, otherTextPaint,
+            )
+        }
         for (p in persons) {
             canvas.drawRect(p.x1 * scaleX, p.y1 * scaleY, p.x2 * scaleX, p.y2 * scaleY, boxPaint)
             canvas.drawText("id ${p.trackId}", p.x1 * scaleX, p.y1 * scaleY - 8f, hudPaint)
