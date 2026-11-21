@@ -20,7 +20,8 @@ mobile/
                 ├── Detection.kt         ✅ data classes
                 ├── Nms.kt               ✅ IoU + NMS (pure, testable)
                 ├── ByteTrackLite.kt     ⚠️ Option-A tracker (IoU only, no Kalman/ReID)
-                ├── PersonDetector.kt    ⚠️ TFLite wrapper — VERIFY output layout + quant
+                ├── YoloDecoder.kt       ✅ pure tensor/box logic (NCHW input, [1,84,8400] output, normalized boxes, int8) — JVM-tested
+                ├── PersonDetector.kt    ⚠️ TFLite wrapper; reads layouts/types from the model — NOT compiled, verify on device
                 ├── CountingAnalyzer.kt  ⚠️ CameraX glue — VERIFY YUV->Bitmap
                 ├── OverlayView.kt       ✅ boxes + HUD
                 └── MainActivity.kt      ⚠️ CameraX wiring skeleton
@@ -30,6 +31,17 @@ mobile/
 `app/src/main/java/com/roamcount/` and `app/src/test/java/com/roamcount/`** — they are
 already in package `com.roamcount`. That's your one piece of logic that is proven equal
 to the PC version.
+
+## Run the pure-logic tests (JVM, no Android needed)
+
+```bash
+cd app/src
+kotlinc main/java/com/roamcount/Detection.kt main/java/com/roamcount/YoloDecoder.kt \
+        test/java/com/roamcount/YoloDecoderTest.kt -include-runtime -d t.jar
+java -cp t.jar com.roamcount.YoloDecoderTest      # 14 passed
+```
+These prove the decode math on synthetic tensors (layouts, normalized vs pixel boxes,
+letterbox undo, int8). They do not prove the real `.tflite` — that is the on-device check above.
 
 ## The data-flow (identical shape to the PC pipeline)
 
@@ -42,10 +54,14 @@ CameraX ImageAnalysis ─▶ PersonDetector (TFLite) ─▶ ByteTrackLite ─▶
 
 1. **Export the model on Linux/WSL** (TFLite export can't run on Windows — see
    `../README.md`), put `yolo11n.tflite` in `app/src/main/assets/`.
-2. **Open the .tflite in [netron.app](https://netron.app)** and confirm in `PersonDetector.kt`:
-   - output shape / layout (code assumes `(1, 8400, 84)` = `[cx,cy,w,h,80 class scores]`),
-   - whether box coords are pixels `[0,640]` or normalized `[0,1]`,
-   - int8 vs float I/O (add dequant/quant for int8).
+2. **Check the model I/O.** `PersonDetector` now reads the input/output shapes and fp32/int8
+   types from the loaded model, handles both layouts, and throws on anything else (no more
+   silent garbage). For the ultralytics 8.4 export expect: input NCHW `[1,3,640,640]`,
+   output attribute-major `[1,84,8400]`, boxes normalized `[0,1]`. Log `detector.describe()`
+   once at startup (or open the .tflite in [netron.app](https://netron.app)) and confirm.
+   The one thing a shape cannot reveal is the box scale: `boxesNormalized` (default `true`).
+   Check on bus.jpg: 4 persons, boxes within ~3 px of the `.pt` model.
+   fp32 (~11 MB) and int8 (~3 MB) are both supported via the tensor's quantization params.
 3. **YUV→Bitmap** in `CountingAnalyzer.kt`: simplest is
    `ImageAnalysis.setOutputImageFormat(OUTPUT_IMAGE_FORMAT_RGBA_8888)` + `ImageProxy.toBitmap()`.
 4. **Delegate**: try `GpuDelegate`; fall back to NNAPI / CPU threads. Measure FPS.

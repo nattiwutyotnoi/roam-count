@@ -3,29 +3,30 @@ package com.roamcount
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 
-// EXAMPLE ONLY / NOT COMPILED.
+// NOT COMPILED against the Android SDK (no toolchain in the dev environment) -- the pure
+// tensor/box logic lives in YoloDecoder.kt and IS unit-tested on the JVM (YoloDecoderTest.kt).
 //
-// YOLO11n person detector via TFLite. Only class 0 (person) is kept. Thresholds are
-// passed in (mirror config.json on PC), never hard-coded elsewhere.
+// YOLO11n person detector via TFLite (ultralytics 8.4 export). Only class 0 (person) is kept.
+// Thresholds are passed in (mirror config.json on PC), never hard-coded elsewhere.
 //
-// ⚠️ TWO THINGS YOU MUST VERIFY against YOUR exported .tflite (open it in netron.app):
+// Layout facts for the ultralytics 8.4 export (what the previous version of this file got
+// wrong -- all three fail SILENTLY, no exception, just garbage boxes):
+//   * input  NCHW  [1,3,640,640]
+//   * output       [1,84,8400]  = attribute-major: rows cx,cy,w,h,cls0..cls79 ; columns = anchors
+//   * boxes        normalized [0,1]   (so multiplied by inputSize before the letterbox is undone)
 //
-//   1) OUTPUT LAYOUT. ONNX gives (1, 84, 8400). The TFLite converter (onnx2tf) usually
-//      TRANSPOSES to (1, 8400, 84) -> this code assumes that: each of 8400 rows is
-//      [cx, cy, w, h, clsScore0 .. clsScore79] (YOLO11 has no separate objectness).
-//      If your shape differs, fix OUT_ANCHORS / OUT_ATTRS and the indexing.
-//
-//   2) COORDINATE SCALE + QUANTIZATION.
-//      - Some exports give box coords already normalized to [0,1]; others in input
-//        pixels [0,640]. This code assumes INPUT PIXELS. If normalized, multiply
-//        cx,cy,w,h by inputSize first. Verify on a known image.
-//      - An INT8 model has quantized input & output (scale, zeroPoint from
-//        interpreter.getInputTensor(0).quantizationParams()). Dequantize the output
-//        and quantize the input. This skeleton shows the FLOAT path only.
+// Rather than trust those facts, the constructor READS the tensor shapes/types from the
+// loaded model and fails loudly if they are not what the decode code can handle. Input
+// layout (NCHW/NHWC), output layout and fp32/int8/uint8 are all detected from the model.
+// Box scale is the one thing a shape cannot reveal -> `boxesNormalized` (default true);
+// verify on a known image (bus.jpg, expect 4 persons, boxes within ~3 px of the .pt model).
 
 class PersonDetector(
     modelBuffer: ByteBuffer,
@@ -34,79 +35,108 @@ class PersonDetector(
     private val confThresh: Float = 0.35f,
     private val iouThresh: Float = 0.5f,
     private val personClass: Int = 0,
+    private val boxesNormalized: Boolean = true,
 ) {
     private val interpreter = Interpreter(modelBuffer, options)
+    private val nativeOrder = ByteOrder.nativeOrder()
 
-    // TODO verify against interpreter.getOutputTensor(0).shape()
-    private val outAnchors = 8400
-    private val outAttrs = 84 // 4 bbox + 80 classes
+    // --- input tensor ---------------------------------------------------------
+    private val inTensor = interpreter.getInputTensor(0)
+    private val inType = typeOf(inTensor.dataType())
+    private val inScale = inTensor.quantizationParams().scale
+    private val inZero = inTensor.quantizationParams().zeroPoint
+    private val inputIsNchw = resolveInputLayout(inTensor.shape(), inputSize)
+
+    // --- output tensor --------------------------------------------------------
+    private val outTensor = interpreter.getOutputTensor(0)
+    private val outType = typeOf(outTensor.dataType())
+    private val outScale = outTensor.quantizationParams().scale
+    private val outZero = outTensor.quantizationParams().zeroPoint
+    private val outLayout: YoloDecoder.OutputLayout
+    private val outAnchors: Int
+    private val outAttrs: Int
+
+    // --- reusable buffers (no per-frame allocation on the hot path) ------------
+    private val inputBuf: ByteBuffer
+    private val outputBuf: ByteBuffer
+    private val raw: FloatArray
+    private val pixels = IntArray(inputSize * inputSize)
+    private val lbBitmap = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
+    private val lbCanvas = Canvas(lbBitmap)
+    private val lbPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+
+    init {
+        val os = outTensor.shape()
+        check(os.size == 3 && os[0] == 1) { "Unexpected output shape ${os.toList()}; expected [1,84,8400] or [1,8400,84]" }
+        outLayout = YoloDecoder.outputLayout(os[1], os[2])
+        outAttrs = minOf(os[1], os[2])
+        outAnchors = maxOf(os[1], os[2])
+        check(outAttrs >= 5) { "Output has only $outAttrs attributes; expected 4 box + class scores" }
+        check(personClass in 0 until outAttrs - 4) { "personClass $personClass out of range for ${outAttrs - 4} classes" }
+
+        inputBuf = ByteBuffer.allocateDirect(inTensor.numBytes()).order(nativeOrder)
+        check(inputBuf.capacity() == inputSize * inputSize * 3 * bytesPer(inType)) {
+            "Input tensor is ${inputBuf.capacity()} bytes; ${inputSize}x$inputSize RGB ($inType) needs " +
+                "${inputSize * inputSize * 3 * bytesPer(inType)}. Wrong inputSize?"
+        }
+        outputBuf = ByteBuffer.allocateDirect(outTensor.numBytes()).order(nativeOrder)
+        raw = FloatArray(outAnchors * outAttrs)
+    }
+
+    /** One-line summary of what was detected from the model -- log it once at startup. */
+    fun describe(): String =
+        "in=${inTensor.shape().toList()} ${if (inputIsNchw) "NCHW" else "NHWC"} $inType | " +
+            "out=${outTensor.shape().toList()} $outLayout $outType | boxesNormalized=$boxesNormalized"
 
     fun detect(frame: Bitmap): List<Detection> {
-        val lb = letterbox(frame, inputSize)
-        val input = toFloatInput(lb.bitmap) // [1,640,640,3], /255f  (float path)
+        val lb = letterbox(frame)
+        lbBitmap.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
+        YoloDecoder.writeInput(pixels, inputSize, inputIsNchw, inType, inScale, inZero, inputBuf)
 
-        val output = Array(1) { Array(outAnchors) { FloatArray(outAttrs) } }
-        interpreter.run(input, output)
+        outputBuf.rewind()
+        interpreter.run(inputBuf, outputBuf)
+        YoloDecoder.readOutput(outputBuf, outType, outScale, outZero, raw)
 
-        val dets = ArrayList<Detection>()
-        for (row in output[0]) {
-            var bestCls = -1
-            var bestScore = 0f
-            for (c in 0 until (outAttrs - 4)) {
-                val s = row[4 + c]
-                if (s > bestScore) {
-                    bestScore = s
-                    bestCls = c
-                }
-            }
-            if (bestCls != personClass || bestScore < confThresh) continue
-
-            // assumes input-pixel coords; if normalized, multiply by inputSize here
-            val cx = row[0]
-            val cy = row[1]
-            val w = row[2]
-            val h = row[3]
-            // undo letterbox -> original-frame pixels
-            val x1 = (cx - w / 2f - lb.padX) / lb.scale
-            val y1 = (cy - h / 2f - lb.padY) / lb.scale
-            val x2 = (cx + w / 2f - lb.padX) / lb.scale
-            val y2 = (cy + h / 2f - lb.padY) / lb.scale
-            dets.add(Detection(x1, y1, x2, y2, bestScore, bestCls))
+        val boxScale = if (boxesNormalized) inputSize.toFloat() else 1f
+        val candidates = YoloDecoder.decode(raw, outAnchors, outAttrs, outLayout, confThresh, personClass, boxScale)
+        // NMS in model-input space (like ultralytics), then map the survivors to frame pixels.
+        return Nms.apply(candidates, iouThresh).map {
+            YoloDecoder.toFrame(it, lb.scale, lb.padX, lb.padY, frame.width, frame.height)
         }
-        return Nms.apply(dets, iouThresh)
     }
 
     fun close() = interpreter.close()
 
-    // --- helpers (EXAMPLE ONLY) ------------------------------------------------
-    private class Letterboxed(val bitmap: Bitmap, val scale: Float, val padX: Float, val padY: Float)
+    // --- helpers -----------------------------------------------------------------
+    private class Letterbox(val scale: Float, val padX: Float, val padY: Float)
 
-    /** Resize keeping aspect ratio, center-pad to a square inputSize (like YOLO's letterbox). */
-    private fun letterbox(src: Bitmap, size: Int): Letterboxed {
-        val scale = minOf(size.toFloat() / src.width, size.toFloat() / src.height)
-        val newW = Math.round(src.width * scale)
-        val newH = Math.round(src.height * scale)
-        val padX = (size - newW) / 2f
-        val padY = (size - newH) / 2f
-        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(out)
-        canvas.drawColor(Color.rgb(114, 114, 114)) // YOLO's grey pad
-        val resized = Bitmap.createScaledBitmap(src, newW, newH, true)
-        canvas.drawBitmap(resized, padX, padY, null)
-        return Letterboxed(out, scale, padX, padY)
+    /** Resize keeping aspect ratio and center-pad to a square (YOLO's grey 114 letterbox) into lbBitmap. */
+    private fun letterbox(src: Bitmap): Letterbox {
+        val scale = minOf(inputSize.toFloat() / src.width, inputSize.toFloat() / src.height)
+        val newW = src.width * scale
+        val newH = src.height * scale
+        val padX = (inputSize - newW) / 2f
+        val padY = (inputSize - newH) / 2f
+        lbCanvas.drawColor(Color.rgb(114, 114, 114))
+        lbCanvas.drawBitmap(src, null, RectF(padX, padY, padX + newW, padY + newH), lbPaint)
+        return Letterbox(scale, padX, padY)
     }
 
-    /** Bitmap -> NHWC float32 buffer normalized to [0,1]. (int8: quantize instead.) */
-    private fun toFloatInput(bmp: Bitmap): ByteBuffer {
-        val buf = ByteBuffer.allocateDirect(4 * inputSize * inputSize * 3).order(ByteOrder.nativeOrder())
-        val px = IntArray(inputSize * inputSize)
-        bmp.getPixels(px, 0, inputSize, 0, 0, inputSize, inputSize)
-        for (p in px) {
-            buf.putFloat(((p shr 16) and 0xFF) / 255f) // R
-            buf.putFloat(((p shr 8) and 0xFF) / 255f)  // G
-            buf.putFloat((p and 0xFF) / 255f)          // B
+    private companion object {
+        fun typeOf(t: DataType): YoloDecoder.TensorType = when (t) {
+            DataType.FLOAT32 -> YoloDecoder.TensorType.FLOAT32
+            DataType.INT8 -> YoloDecoder.TensorType.INT8
+            DataType.UINT8 -> YoloDecoder.TensorType.UINT8
+            else -> error("Unsupported tensor type $t (expected FLOAT32 / INT8 / UINT8)")
         }
-        buf.rewind()
-        return buf
+
+        fun bytesPer(t: YoloDecoder.TensorType) = if (t == YoloDecoder.TensorType.FLOAT32) 4 else 1
+
+        /** true = NCHW [1,3,H,W], false = NHWC [1,H,W,3]; anything else is an error, never a guess. */
+        fun resolveInputLayout(shape: IntArray, size: Int): Boolean = when {
+            shape.size == 4 && shape[0] == 1 && shape[1] == 3 && shape[2] == size && shape[3] == size -> true
+            shape.size == 4 && shape[0] == 1 && shape[3] == 3 && shape[1] == size && shape[2] == size -> false
+            else -> error("Unexpected input shape ${shape.toList()}; expected [1,3,$size,$size] or [1,$size,$size,3]")
+        }
     }
 }

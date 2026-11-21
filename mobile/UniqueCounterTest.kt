@@ -7,8 +7,8 @@ package com.roamcount
  * Standalone (no JUnit needed):   kotlinc UniqueCounter.kt UniqueCounterTest.kt -include-runtime -d t.jar && java -jar t.jar
  * Or drop both files into app/src/test and wrap each fun in @Test.
  *
- * NOT EXECUTED here (no Kotlin toolchain in this environment). The identical
- * cases pass 11/11 in Python (`python test_counter.py`).
+ * Executed with kotlinc 2.0.21 on 2026-11-21: 11/11 pass. The identical
+ * cases also pass 11/11 in Python (`python test_counter.py`).
  */
 
 private fun check(cond: Boolean, msg: String) {
