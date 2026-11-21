@@ -63,6 +63,16 @@ class ByteTrackLite(
         }
     }
 
+    /**
+     * Forget every live track but KEEP the id counter, so ids stay unique. Use when the scene
+     * changes under the tracker (camera switched): old boxes must not match new people, and
+     * UniqueCounter (which remembers counted ids) must never see an old id reissued.
+     * reset() restarts ids at 1, so only call that together with UniqueCounter.reset().
+     */
+    fun dropTracks() {
+        tracks.clear()
+    }
+
     fun reset() {
         tracks.clear()
         nextId = 1
